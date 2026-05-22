@@ -2,20 +2,19 @@ name: Check PR Release Labels
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, reopened, synchronize, labeled, unlabeled]
     branches:
       - main
 
-permissions:
-  pull-requests: read
+concurrency:
+  group: check-release-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   check-release-label:
-    name: check-release-label
+    name: actions/check-release-label
     # qa から main へのマージ時のみ実行
-    if: >-
-      github.event.pull_request.head.ref == 'qa' &&
-      github.event.pull_request.base.ref == 'main'
+    if: github.event.pull_request.head.ref == 'qa'
     runs-on: ubuntu-latest
     steps:
       - name: Check for required label
@@ -23,28 +22,31 @@ jobs:
           # 現在の PR の全てのラベル情報を取得（JSON形式）
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels) }}
         run: |
-          echo "PR ラベルをチェックしています..."
+          # 厳格モード: エラー時は即終了
+          set -euo pipefail
+          trap 'echo "❌ Error in Check for required label step (line $LINENO)."; exit 1' ERR
+
+          echo "Checking PR labels..."
 
           # jq を使用してラベル名リストを抽出
           # 注意：GitHub Runner 環境にはデフォルトで jq がインストールされています
           LABELS=$(echo "$PR_LABELS_JSON" | jq -r '.[].name')
 
           # 必須かつ一つだけ選択可能なラベルリストを定義
-          # release:major, release:minor, release:patch, no-release
+          # "AEGIS: no-release", "AEGIS: release"
 
           MATCH_COUNT=0
           MATCHED_LABELS=""
 
           # PR の各ラベルをループしてチェック
-          # スペースを含むラベル名を正しく処理するために while read ループを使用（release ラベルには通常スペースは含まれませんが）
           while IFS= read -r LABEL; do
             if [ -z "$LABEL" ]; then continue; fi
             
             case "$LABEL" in
-              "release:major"|"release:minor"|"release:patch"|"no-release")
-                echo "有効なラベルが見つかりました: $LABEL"
+              "AEGIS: no-release"|"AEGIS: release")
+                echo "Found valid label: $LABEL"
                 MATCH_COUNT=$((MATCH_COUNT + 1))
-                MATCHED_LABELS="$MATCHED_LABELS $LABEL"
+                MATCHED_LABELS="$MATCHED_LABELS '$LABEL'"
                 ;;
             esac
           done <<< "$LABELS"
@@ -53,18 +55,16 @@ jobs:
 
           # チェックロジック：正確に1個である必要があります
           if [ "$MATCH_COUNT" -eq 0 ]; then
-            echo "::error::Release ラベルが検出されませんでした！"
-            echo "エラー：以下のラベルから一つだけ選択してください："
-            echo " - release:major"
-            echo " - release:minor"
-            echo " - release:patch"
-            echo " - no-release"
+            echo "::error::Required label not detected!"
+            echo "Error: Please select exactly one of the following labels:"
+            echo " - 'AEGIS: no-release'"
+            echo " - 'AEGIS: release'"
             exit 1
           elif [ "$MATCH_COUNT" -gt 1 ]; then
-            echo "::error::複数の Release ラベルが検出されました！"
-            echo "エラー：複数の Release ラベルを同時に選択することはできません。検出されたラベル：$MATCHED_LABELS"
-            echo "一つだけ残してください。"
+            echo "::error::Multiple required labels detected!"
+            echo "Error: Multiple required labels cannot be selected at the same time. Detected labels:$MATCHED_LABELS"
+            echo "Please leave only one."
             exit 1
           fi
 
-          echo "チェック合格。選択されたラベル: $MATCHED_LABELS"
+          echo "Check passed. Selected label:$MATCHED_LABELS"
